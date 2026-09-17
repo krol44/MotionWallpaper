@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    env:
+      SCHEME: MotionWallpaper
+      PROJECT: MotionWallpaper.xcodeproj
+      APP_NAME: MotionWallpaper.app
+      BUILD_DIR: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest available Xcode
+        run: |
+          LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$LATEST_XCODE" ]; then
+            sudo xcode-select -s "$LATEST_XCODE"
+          fi
+          xcodebuild -version
+
+      - name: Build Release
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$BUILD_DIR" \
+            build
+
+      - name: Package DMG
+        run: |
+          APP_PATH="$BUILD_DIR/Build/Products/Release/$APP_NAME"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Built app not found at $APP_PATH"
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          DMG_NAME="MotionWallpaper-${VERSION}.dmg"
+
+          STAGING_DIR="$(mktemp -d)/MotionWallpaper"
+          mkdir -p "$STAGING_DIR"
+          ditto "$APP_PATH" "$STAGING_DIR/$APP_NAME"
+          ln -s /Applications "$STAGING_DIR/Applications"
+
+          hdiutil create -volname "Motion Wallpaper" \
+            -srcfolder "$STAGING_DIR" \
+            -ov -format UDZO \
+            "$DMG_NAME"
+
+          shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256"
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Motion Wallpaper ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            ${{ env.DMG_NAME }}
+            ${{ env.DMG_NAME }}.sha256
