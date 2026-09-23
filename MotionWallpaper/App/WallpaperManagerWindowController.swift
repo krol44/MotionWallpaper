@@ -53,7 +53,7 @@ final class WallpaperManagerWindowController: NSWindowController,
             defer: false
         )
         window.title = "Motion Wallpaper"
-        window.subtitle = "macOS 26"
+        window.subtitle = "macOS 26+"
         window.minSize = NSSize(width: 980, height: 640)
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified

@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !didFinishLaunchSetup else { return }
         didFinishLaunchSetup = true
-        NSLog("MotionWallpaper: applicationDidFinishLaunching on macOS 26")
+        NSLog("MotionWallpaper: applicationDidFinishLaunching on %@", ProcessInfo.processInfo.operatingSystemVersionString)
 
         guard MacOS26LockScreenInstaller.isSupportedRuntime else {
             let version = ProcessInfo.processInfo.operatingSystemVersion
@@ -323,7 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Motion Wallpaper",
             .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "4.0",
-            .credits: NSAttributedString(string: "Native video wallpapers for macOS 26 Tahoe.")
+            .credits: NSAttributedString(string: "Native video wallpapers for macOS 26 and later.")
         ])
     }
 

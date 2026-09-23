@@ -32,7 +32,7 @@ final class MacOS26LockScreenInstaller {
         var errorDescription: String? {
             switch self {
             case .unsupportedSystem:
-                return "Motion Wallpaper requires macOS 26 (Tahoe)."
+                return "Motion Wallpaper requires macOS 26 (Tahoe) or later."
             case .noSelectedVideo:
                 return "No lock-screen video is selected."
             case .noDownloadedAerial:
