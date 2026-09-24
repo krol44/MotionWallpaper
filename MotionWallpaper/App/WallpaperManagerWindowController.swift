@@ -17,6 +17,7 @@ final class WallpaperManagerWindowController: NSWindowController,
     private let collectionView = NSCollectionView()
     private let emptyState = NSStackView()
     private let previewView = LoopingVideoView(frame: .zero)
+    private let previewPosterView = NSImageView()
     private let previewPlaceholder = NSImageView()
 
     private let selectedTitleLabel = NSTextField(labelWithString: "Select a video")
@@ -24,10 +25,16 @@ final class WallpaperManagerWindowController: NSWindowController,
     private let desktopStatusLabel = NSTextField(labelWithString: "Desktop: Off")
     private let lockStatusLabel = NSTextField(labelWithString: "Lock Screen: Original")
     private let backgroundRendererLabel = NSTextField(labelWithString: "Background renderer: Stopped")
+    private let conversionLabel = NSTextField(labelWithString: "Preparing video…")
+    private let conversionProgress = NSProgressIndicator()
+    private let cancelConversionButton = NSButton()
+    private let conversionStack = NSStackView()
 
     private let useDesktopButton = NSButton()
     private let useLockScreenButton = NSButton()
     private let useBothButton = NSButton()
+    private let prepareButton = NSButton()
+    private let downloadButton = NSButton()
     private let stopDesktopButton = NSButton()
     private let restoreLockButton = NSButton()
     private let restoreAllButton = NSButton()
@@ -40,8 +47,23 @@ final class WallpaperManagerWindowController: NSWindowController,
     private let loginItemStatusLabel = NSTextField(labelWithString: "")
 
     private var videos: [VideoItem] = []
+    private var catalogVideos: [VideoItem] = []
+    private var catalogItems: [CatalogVideo] = []
+    private var catalogBaseURL: URL?
+    private var catalogURLInput = ""
+    private var catalogMessage = "Enter a catalog URL and click Update Catalog."
+    private var isLoadingCatalog = false
+    private weak var catalogHeader: CatalogHeaderView?
     private var selectedVideoID: UUID?
+    private var selectedCatalogID: Int?
     private var isInstallingLockScreen = false
+    private var installTask: Task<Void, Never>?
+    private var catalogDownloadTask: URLSessionDownloadTask?
+    private var convertingVideoID: UUID?
+
+    private var needsPreparation: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+    }
 
     var onWindowClosed: (() -> Void)?
 
@@ -63,6 +85,7 @@ final class WallpaperManagerWindowController: NSWindowController,
         window.delegate = self
         buildToolbar()
         buildUI()
+        restoreSavedCatalog()
         reload()
     }
 
@@ -110,10 +133,10 @@ final class WallpaperManagerWindowController: NSWindowController,
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
 
-        let title = NSTextField(labelWithString: "Video Library")
+        let title = NSTextField(labelWithString: "My Videos")
         title.font = .systemFont(ofSize: 24, weight: .bold)
 
-        let subtitle = NSTextField(labelWithString: "Add videos, preview them, then choose where each one should play.")
+        let subtitle = NSTextField(labelWithString: "Videos added from your Mac.")
         subtitle.font = .systemFont(ofSize: 13)
         subtitle.textColor = .secondaryLabelColor
 
@@ -143,6 +166,9 @@ final class WallpaperManagerWindowController: NSWindowController,
         collectionView.allowsMultipleSelection = false
         collectionView.backgroundColors = [.clear]
         collectionView.register(VideoCardItem.self, forItemWithIdentifier: VideoCardItem.identifier)
+        collectionView.register(CatalogHeaderView.self,
+                                forSupplementaryViewOfKind: NSCollectionView.elementKindSectionHeader,
+                                withIdentifier: CatalogHeaderView.identifier)
         scrollView.documentView = collectionView
         container.addSubview(scrollView)
 
@@ -231,6 +257,10 @@ final class WallpaperManagerWindowController: NSWindowController,
 
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewContainer.addSubview(previewView)
+        previewPosterView.translatesAutoresizingMaskIntoConstraints = false
+        previewPosterView.imageScaling = .scaleProportionallyUpOrDown
+        previewPosterView.isHidden = true
+        previewContainer.addSubview(previewPosterView)
         previewPlaceholder.translatesAutoresizingMaskIntoConstraints = false
         previewPlaceholder.image = NSImage(systemSymbolName: "play.rectangle", accessibilityDescription: "Video preview")
         previewPlaceholder.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 34, weight: .regular)
@@ -242,6 +272,10 @@ final class WallpaperManagerWindowController: NSWindowController,
             previewView.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor),
             previewView.topAnchor.constraint(equalTo: previewContainer.topAnchor),
             previewView.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
+            previewPosterView.leadingAnchor.constraint(equalTo: previewContainer.leadingAnchor),
+            previewPosterView.trailingAnchor.constraint(equalTo: previewContainer.trailingAnchor),
+            previewPosterView.topAnchor.constraint(equalTo: previewContainer.topAnchor),
+            previewPosterView.bottomAnchor.constraint(equalTo: previewContainer.bottomAnchor),
             previewPlaceholder.centerXAnchor.constraint(equalTo: previewContainer.centerXAnchor),
             previewPlaceholder.centerYAnchor.constraint(equalTo: previewContainer.centerYAnchor)
         ])
@@ -269,13 +303,36 @@ final class WallpaperManagerWindowController: NSWindowController,
             stack.addArrangedSubview(label)
         }
 
+        conversionLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        conversionLabel.textColor = .secondaryLabelColor
+        conversionProgress.style = .bar
+        conversionProgress.isIndeterminate = false
+        conversionProgress.minValue = 0
+        conversionProgress.maxValue = 100
+        conversionProgress.doubleValue = 0
+        conversionProgress.translatesAutoresizingMaskIntoConstraints = false
+        conversionProgress.widthAnchor.constraint(equalToConstant: 296).isActive = true
+        configureActionButton(cancelConversionButton, title: "Cancel Conversion", image: "xmark.circle", action: #selector(cancelConversion(_:)))
+        conversionStack.orientation = .vertical
+        conversionStack.alignment = .leading
+        conversionStack.spacing = 8
+        conversionStack.addArrangedSubview(conversionLabel)
+        conversionStack.addArrangedSubview(conversionProgress)
+        conversionStack.addArrangedSubview(cancelConversionButton)
+        conversionStack.isHidden = true
+        stack.addArrangedSubview(conversionStack)
+
         stack.addArrangedSubview(makeSeparator())
         stack.addArrangedSubview(makeSectionTitle("APPLY"))
 
-        configureActionButton(useDesktopButton, title: "Use on Desktop", image: "display", action: #selector(applyDesktop(_:)), emphasized: true)
+        configureActionButton(useDesktopButton, title: "Use on Desktop", image: "display", action: #selector(applyDesktop(_:)))
         configureActionButton(useLockScreenButton, title: "Use on Lock Screen", image: "lock.rectangle", action: #selector(applyLockScreen(_:)))
         configureActionButton(useBothButton, title: "Use on Desktop & Lock Screen", image: "rectangle.on.rectangle", action: #selector(applyBoth(_:)))
+        configureActionButton(prepareButton, title: "Convert for Lock Screen", image: "arrow.triangle.2.circlepath", action: #selector(convertSelected(_:)))
+        configureActionButton(downloadButton, title: "Download & Convert", image: "arrow.down.circle", action: #selector(downloadSelected(_:)), emphasized: true)
 
+        stack.addArrangedSubview(downloadButton)
+        stack.addArrangedSubview(prepareButton)
         stack.addArrangedSubview(useDesktopButton)
         stack.addArrangedSubview(useLockScreenButton)
         stack.addArrangedSubview(useBothButton)
@@ -400,9 +457,13 @@ final class WallpaperManagerWindowController: NSWindowController,
 
     func reload() {
         let previousSelection = selectedVideoID
-        videos = WallpaperStore.shared.loadVideos()
+        let storedVideos = WallpaperStore.shared.loadVideos()
+        videos = storedVideos.filter { $0.catalogSourceKey == nil }
+        catalogVideos = storedVideos.filter { $0.catalogSourceKey != nil }
 
-        if let previousSelection, videos.contains(where: { $0.id == previousSelection }) {
+        if selectedCatalogID != nil {
+            selectedVideoID = nil
+        } else if let previousSelection, videos.contains(where: { $0.id == previousSelection }) {
             selectedVideoID = previousSelection
         } else {
             let settings = WallpaperStore.shared.loadSettings()
@@ -411,7 +472,7 @@ final class WallpaperManagerWindowController: NSWindowController,
         }
 
         collectionView.reloadData()
-        emptyState.isHidden = !videos.isEmpty
+        emptyState.isHidden = true
         restoreCollectionSelection()
         updateInspector()
     }
@@ -420,44 +481,90 @@ final class WallpaperManagerWindowController: NSWindowController,
         addVideo(nil)
     }
 
-    private func restoreCollectionSelection() {
-        guard let selectedVideoID,
-              let index = videos.firstIndex(where: { $0.id == selectedVideoID })
-        else {
-            collectionView.selectionIndexPaths = []
+    func reinstallConfiguredLockScreenVideo() {
+        let settings = WallpaperStore.shared.loadSettings()
+        guard let item = WallpaperStore.shared.item(id: settings.lockScreenVideoID) else {
+            showMessage(title: "Select a Video", text: "Choose a lock-screen video from the library first.")
             return
         }
-        collectionView.selectionIndexPaths = [IndexPath(item: index, section: 0)]
+        selectedVideoID = item.id
+        selectedCatalogID = nil
+        reload()
+        installLockScreen(item: item, useNativeDesktop: settings.aerialDesktopEnabled)
+    }
+
+    private func restoreCollectionSelection() {
+        if let selectedCatalogID,
+           let index = catalogItems.firstIndex(where: { $0.mwID == selectedCatalogID }) {
+            collectionView.selectionIndexPaths = [IndexPath(item: index, section: 1)]
+        } else if let selectedVideoID,
+                  let index = videos.firstIndex(where: { $0.id == selectedVideoID }) {
+            collectionView.selectionIndexPaths = [IndexPath(item: index, section: 0)]
+        } else {
+            collectionView.selectionIndexPaths = []
+        }
     }
 
     private var selectedVideo: VideoItem? {
+        if let selectedCatalogID, let catalogBaseURL {
+            return catalogVideos.first {
+                $0.catalogMWID == selectedCatalogID &&
+                    $0.catalogSourceKey == WallpaperStore.catalogSourceKey(for: catalogBaseURL)
+            }
+        }
         guard let selectedVideoID else { return nil }
         return videos.first { $0.id == selectedVideoID }
     }
 
+    private var selectedCatalogVideo: CatalogVideo? {
+        guard let selectedCatalogID else { return nil }
+        return catalogItems.first { $0.mwID == selectedCatalogID }
+    }
+
     private func updateInspector() {
         let settings = WallpaperStore.shared.loadSettings()
-        let desktopItem = videos.first { $0.id == settings.desktopVideoID }
-        let lockItem = videos.first { $0.id == settings.lockScreenVideoID }
+        let allVideos = videos + catalogVideos
+        let desktopItem = allVideos.first { $0.id == settings.desktopVideoID }
+        let lockItem = allVideos.first { $0.id == settings.lockScreenVideoID }
         let desktopActive = settings.desktopEnabled && DesktopWallpaperAgentManager.shared.isRunning
         let lockActive = MacOS26LockScreenInstaller.isInstalled
         let hasRestorableWallpaperState = MacOS26LockScreenInstaller.hasRestorableState
 
         if let item = selectedVideo {
-            selectedTitleLabel.stringValue = item.title
-            selectedMetadataLabel.stringValue = metadataText(for: item)
+            selectedTitleLabel.stringValue = selectedCatalogVideo?.title ?? item.title
+            selectedMetadataLabel.stringValue = selectedCatalogVideo?.metadataText ?? metadataText(for: item)
+            previewPosterView.isHidden = true
+            previewPosterView.image = nil
+            previewView.isHidden = false
             previewPlaceholder.isHidden = true
             previewView.play(url: WallpaperStore.shared.url(for: item), fillScreen: false, muted: true)
+        } else if let catalog = selectedCatalogVideo, let catalogBaseURL {
+            selectedTitleLabel.stringValue = catalog.title
+            selectedMetadataLabel.stringValue = catalog.metadataText
+            previewView.stop()
+            previewView.isHidden = true
+            previewPosterView.image = nil
+            previewPosterView.isHidden = false
+            previewPlaceholder.isHidden = false
+            CatalogPosterProvider.shared.image(for: catalog.posterURL(baseURL: catalogBaseURL)) { [weak self] image in
+                guard let self, self.selectedCatalogID == catalog.mwID,
+                      self.catalogBaseURL == catalogBaseURL, self.selectedVideo == nil else { return }
+                self.previewPosterView.image = image
+                self.previewPlaceholder.isHidden = image != nil
+            }
         } else {
             selectedTitleLabel.stringValue = "Select a video"
             selectedMetadataLabel.stringValue = "Choose a video from the library to preview and apply it."
             previewView.stop()
+            previewView.isHidden = true
+            previewPosterView.image = nil
+            previewPosterView.isHidden = true
             previewPlaceholder.isHidden = false
         }
 
-        desktopStatusLabel.stringValue = desktopActive
-            ? "Desktop: Playing \(desktopItem?.title ?? "selected video")"
-            : "Desktop: Off"
+        desktopStatusLabel.stringValue = settings.aerialDesktopEnabled && lockActive
+            ? "Desktop: Aerial transition (\(desktopItem?.title ?? "selected video"))"
+            : desktopActive ? "Desktop: Playing \(desktopItem?.title ?? "selected video")" : "Desktop: Off"
         lockStatusLabel.stringValue = lockActive
             ? "Lock Screen: \(lockItem?.title ?? "Custom video")"
             : "Lock Screen: Original system wallpaper"
@@ -471,11 +578,18 @@ final class WallpaperManagerWindowController: NSWindowController,
         fillButton.state = settings.fillScreen ? .on : .off
         loginItemStatusLabel.stringValue = "Login item: \(LoginItemManager.statusText)"
 
-        let hasSelection = selectedVideo != nil && !isInstallingLockScreen
+        let hasSelection = selectedVideo != nil
+        downloadButton.isHidden = selectedCatalogVideo == nil || hasSelection
+        downloadButton.isEnabled = selectedCatalogVideo != nil && !isInstallingLockScreen
+        let readyForLockScreen = !needsPreparation || selectedVideo.map(WallpaperStore.shared.isPreparedForLockScreen) == true
+        prepareButton.isHidden = !needsPreparation || !hasSelection || readyForLockScreen
+        prepareButton.isEnabled = hasSelection && !isInstallingLockScreen
         useDesktopButton.isEnabled = hasSelection
-        useLockScreenButton.isEnabled = hasSelection
-        useBothButton.isEnabled = hasSelection
+        useLockScreenButton.isEnabled = hasSelection && readyForLockScreen && !isInstallingLockScreen
+        useBothButton.isEnabled = hasSelection && readyForLockScreen && !isInstallingLockScreen
+        removeButton.isHidden = selectedVideo == nil
         removeButton.isEnabled = selectedVideo != nil && !isInstallingLockScreen
+        conversionStack.isHidden = !isInstallingLockScreen
         stopDesktopButton.isEnabled = settings.desktopEnabled || DesktopWallpaperAgentManager.shared.isRunning
         restoreLockButton.isEnabled = hasRestorableWallpaperState && !isInstallingLockScreen
         restoreAllButton.isEnabled = (settings.desktopEnabled || hasRestorableWallpaperState || DesktopWallpaperAgentManager.shared.isRunning) && !isInstallingLockScreen
@@ -498,43 +612,300 @@ final class WallpaperManagerWindowController: NSWindowController,
     private func stateText(for item: VideoItem) -> String {
         let settings = WallpaperStore.shared.loadSettings()
         var states: [String] = []
-        if settings.desktopVideoID == item.id && settings.desktopEnabled { states.append("Desktop") }
+        if settings.desktopVideoID == item.id && (settings.desktopEnabled || settings.aerialDesktopEnabled) { states.append("Desktop") }
         if settings.lockScreenVideoID == item.id && MacOS26LockScreenInstaller.isInstalled { states.append("Lock Screen") }
+        if convertingVideoID == item.id { states.append("Converting…") }
+        else if needsPreparation && !WallpaperStore.shared.isPreparedForLockScreen(item) { states.append("Needs conversion") }
         return states.isEmpty ? "Ready" : states.joined(separator: " + ")
     }
 
-    func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
-    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { videos.count }
+    func numberOfSections(in collectionView: NSCollectionView) -> Int { 2 }
+    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
+        section == 0 ? videos.count : catalogItems.count
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, layout collectionViewLayout: NSCollectionViewLayout,
+                        referenceSizeForHeaderInSection section: Int) -> NSSize {
+        section == 1 ? NSSize(width: collectionView.bounds.width, height: 140) : .zero
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, viewForSupplementaryElementOfKind kind: String,
+                        at indexPath: IndexPath) -> NSView {
+        let view = collectionView.makeSupplementaryView(ofKind: kind,
+            withIdentifier: CatalogHeaderView.identifier, for: indexPath)
+        guard let header = view as? CatalogHeaderView else { return view }
+        catalogHeader = header
+        header.configure(url: catalogURLInput, message: catalogMessage, loading: isLoadingCatalog) { [weak self] url in
+            self?.loadCatalog(from: url)
+        }
+        return header
+    }
 
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let item = collectionView.makeItem(withIdentifier: VideoCardItem.identifier, for: indexPath)
         guard let card = item as? VideoCardItem else { return item }
-        let video = videos[indexPath.item]
-        card.configure(video: video, url: WallpaperStore.shared.url(for: video), status: stateText(for: video))
+        if indexPath.section == 0 {
+            let video = videos[indexPath.item]
+            card.configure(title: video.title, url: WallpaperStore.shared.url(for: video),
+                           status: stateText(for: video), downloaded: false)
+        } else {
+            let catalog = catalogItems[indexPath.item]
+            let downloaded = catalogVideos.contains {
+                $0.catalogMWID == catalog.mwID &&
+                    $0.catalogSourceKey == catalogBaseURL.map(WallpaperStore.catalogSourceKey(for:))
+            }
+            if let catalogBaseURL {
+                card.configure(title: catalog.title, url: catalog.posterURL(baseURL: catalogBaseURL),
+                               status: downloaded ? "Downloaded ✓" : catalog.metadataText,
+                               downloaded: downloaded, isPoster: true)
+            }
+        }
         return card
     }
 
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
-        guard let indexPath = indexPaths.first, indexPath.item < videos.count else { return }
-        selectedVideoID = videos[indexPath.item].id
+        guard let indexPath = indexPaths.first else { return }
+        if indexPath.section == 0, indexPath.item < videos.count {
+            selectedVideoID = videos[indexPath.item].id
+            selectedCatalogID = nil
+        } else if indexPath.section == 1, indexPath.item < catalogItems.count {
+            selectedCatalogID = catalogItems[indexPath.item].mwID
+            selectedVideoID = nil
+        } else { return }
         updateInspector()
     }
 
     func collectionView(_ collectionView: NSCollectionView, didDeselectItemsAt indexPaths: Set<IndexPath>) {
         if collectionView.selectionIndexPaths.isEmpty {
             selectedVideoID = nil
+            selectedCatalogID = nil
             updateInspector()
         }
     }
 
     @objc private func addVideo(_ sender: Any?) {
+        guard !isInstallingLockScreen else {
+            showMessage(title: "Video Preparation in Progress", text: "Finish or cancel the current operation before adding another video.")
+            return
+        }
         guard let url = WallpaperStore.openVideoPicker() else { return }
         do {
             let item = try WallpaperStore.shared.addVideo(from: url)
             selectedVideoID = item.id
+            selectedCatalogID = nil
             reload()
+            if needsPreparation { prepareVideo(item) }
         } catch {
             showError(error)
+        }
+    }
+
+    private var savedCatalogURL: URL {
+        WallpaperStore.shared.appSupportDirectory.appendingPathComponent("catalog.json")
+    }
+
+    private func restoreSavedCatalog() {
+        guard let data = try? Data(contentsOf: savedCatalogURL),
+              let snapshot = try? JSONDecoder().decode(CatalogSnapshot.self, from: data),
+              let baseURL = URL(string: snapshot.sourceURL),
+              baseURL.scheme?.lowercased() == "https", baseURL.host != nil else { return }
+        catalogBaseURL = baseURL
+        catalogURLInput = snapshot.sourceURL
+        catalogItems = snapshot.entries
+        catalogMessage = "\(snapshot.entries.count) saved videos • Update Catalog to refresh"
+        catalogHeader?.configure(url: catalogURLInput, message: catalogMessage, loading: false) { [weak self] url in
+            self?.loadCatalog(from: url)
+        }
+    }
+
+    private func saveCatalog(_ entries: [CatalogVideo], from baseURL: URL) throws {
+        try WallpaperStore.shared.ensureDirectories()
+        let snapshot = CatalogSnapshot(sourceURL: baseURL.absoluteString, entries: entries)
+        let data = try JSONEncoder().encode(snapshot)
+        try data.write(to: savedCatalogURL, options: .atomic)
+    }
+
+    private func loadCatalog(from input: String) {
+        guard !isLoadingCatalog else { return }
+        catalogURLInput = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: catalogURLInput),
+              components.scheme?.lowercased() == "https",
+              components.host != nil,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil else {
+            catalogMessage = "Enter a valid HTTPS catalog URL."
+            catalogHeader?.setMessage(catalogMessage, loading: false)
+            return
+        }
+        if !components.path.hasSuffix("/") { components.path += "/" }
+        guard let baseURL = components.url else { return }
+        catalogURLInput = baseURL.absoluteString
+        isLoadingCatalog = true
+        catalogMessage = "Loading catalog…"
+        catalogHeader?.setMessage(catalogMessage, loading: true)
+
+        Task { @MainActor in
+            defer {
+                isLoadingCatalog = false
+                catalogHeader?.setMessage(catalogMessage, loading: false)
+            }
+            do {
+                var request = URLRequest(url: baseURL)
+                request.timeoutInterval = 30
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                    throw CatalogError.invalidCatalogResponse
+                }
+                let decoded = try JSONDecoder().decode([CatalogVideo].self, from: data)
+                try saveCatalog(decoded, from: baseURL)
+                catalogItems = decoded
+                catalogBaseURL = baseURL
+                selectedCatalogID = nil
+                catalogMessage = "\(decoded.count) videos available • Saved locally"
+                reload()
+            } catch {
+                catalogMessage = "Update failed; saved catalog kept: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    @objc private func downloadSelected(_ sender: Any?) {
+        guard !isInstallingLockScreen,
+              let catalog = selectedCatalogVideo,
+              let catalogBaseURL else { return }
+        guard catalog.declaredDownloadURL(baseURL: catalogBaseURL) == catalog.fileURL(baseURL: catalogBaseURL) else {
+            showMessage(title: "Invalid Catalog Entry", text: "The download path does not match this video's ID.")
+            return
+        }
+        isInstallingLockScreen = true
+        conversionLabel.stringValue = "Downloading video… 0%"
+        conversionProgress.isIndeterminate = false
+        conversionProgress.doubleValue = 0
+        cancelConversionButton.title = "Cancel Download"
+        cancelConversionButton.isEnabled = true
+        updateInspector()
+
+        installTask = Task { @MainActor in
+            defer {
+                conversionProgress.stopAnimation(nil)
+                conversionProgress.isIndeterminate = false
+                isInstallingLockScreen = false
+                installTask = nil
+                reload()
+            }
+            do {
+                let (downloadedURL, response) = try await downloadCatalogFile(from: catalog.fileURL(baseURL: catalogBaseURL))
+                defer { try? FileManager.default.removeItem(at: downloadedURL) }
+                try Task.checkCancellation()
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                    throw CatalogError.invalidVideoResponse
+                }
+                conversionProgress.stopAnimation(nil)
+                conversionProgress.isIndeterminate = false
+                conversionProgress.doubleValue = 0
+                conversionLabel.stringValue = "Converting video…"
+                cancelConversionButton.title = "Cancel Conversion"
+                let encoded = try await AerialTemporalEncoder.encode(source: downloadedURL) { value in
+                    DispatchQueue.main.async { self.updateConversionProgress(value) }
+                }
+                defer { try? FileManager.default.removeItem(at: encoded) }
+                try Task.checkCancellation()
+                _ = try WallpaperStore.shared.addConvertedCatalogVideo(
+                    from: encoded, title: catalog.title, baseURL: catalogBaseURL, mwID: catalog.mwID)
+            } catch {
+                if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                    conversionLabel.stringValue = "Download cancelled"
+                } else {
+                    showError(error)
+                }
+            }
+        }
+    }
+
+    private func downloadCatalogFile(from url: URL) async throws -> (URL, URLResponse) {
+        try Task.checkCancellation()
+        var progressTimer: Timer?
+        defer {
+            progressTimer?.invalidate()
+            catalogDownloadTask = nil
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            let task = URLSession.shared.downloadTask(with: url) { location, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let location, let response else {
+                    continuation.resume(throwing: CatalogError.invalidVideoResponse)
+                    return
+                }
+                // URLSession deletes its temporary file after this callback returns.
+                let ownedURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("motionwallpaper-download-\(UUID().uuidString).mp4")
+                do {
+                    try FileManager.default.moveItem(at: location, to: ownedURL)
+                    continuation.resume(returning: (ownedURL, response))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+            catalogDownloadTask = task
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self, weak task] _ in
+                guard let task else { return }
+                let expected = task.countOfBytesExpectedToReceive > 0
+                    ? task.countOfBytesExpectedToReceive : task.response?.expectedContentLength ?? -1
+                self?.updateDownloadProgress(received: task.countOfBytesReceived,
+                                             expected: expected)
+            }
+            task.resume()
+        }
+    }
+
+    private func updateDownloadProgress(received: Int64, expected: Int64) {
+        guard isInstallingLockScreen, catalogDownloadTask != nil,
+              installTask?.isCancelled != true else { return }
+        guard expected > 0 else {
+            let size = ByteCountFormatter.string(fromByteCount: received, countStyle: .file)
+            conversionLabel.stringValue = "Downloading video… \(size)"
+            return
+        }
+        let percent = min(99, max(0, Int(Double(received) / Double(expected) * 100)))
+        conversionProgress.doubleValue = Double(percent)
+        conversionLabel.stringValue = "Downloading video… \(percent)%"
+    }
+
+    @objc private func convertSelected(_ sender: Any?) {
+        guard let item = selectedVideo else { return }
+        prepareVideo(item)
+    }
+
+    private func prepareVideo(_ item: VideoItem) {
+        guard !isInstallingLockScreen else { return }
+        isInstallingLockScreen = true
+        convertingVideoID = item.id
+        conversionProgress.doubleValue = 0
+        conversionLabel.stringValue = "Preparing video…"
+        cancelConversionButton.title = "Cancel Conversion"
+        cancelConversionButton.isEnabled = true
+        updateInspector()
+        collectionView.reloadData()
+
+        installTask = Task { @MainActor in
+            defer {
+                convertingVideoID = nil
+                isInstallingLockScreen = false
+                installTask = nil
+                reload()
+            }
+            do {
+                try await MacOS26LockScreenInstaller.prepare(item: item) { value in
+                    DispatchQueue.main.async { self.updateConversionProgress(value) }
+                }
+            } catch is CancellationError {
+                conversionLabel.stringValue = "Conversion cancelled"
+            } catch {
+                showError(error)
+            }
         }
     }
 
@@ -559,14 +930,7 @@ final class WallpaperManagerWindowController: NSWindowController,
             return
         }
 
-        do {
-            try WallpaperStore.shared.setSelectedVideo(id: item.id, for: .lockScreen)
-        } catch {
-            showError(error)
-            return
-        }
-
-        installLockScreen()
+        installLockScreen(item: item, useNativeDesktop: false)
     }
 
     @objc private func applyBoth(_ sender: Any?) {
@@ -575,35 +939,81 @@ final class WallpaperManagerWindowController: NSWindowController,
             return
         }
 
-        do {
-            try WallpaperStore.shared.setSelectedVideo(id: item.id, for: .desktop)
-            try WallpaperStore.shared.setSelectedVideo(id: item.id, for: .lockScreen)
-            try DesktopWallpaperAgentManager.shared.startOrReload()
-        } catch {
-            showError(error)
-            return
-        }
-
-        installLockScreen()
+        installLockScreen(item: item, useNativeDesktop: true)
     }
 
-    private func installLockScreen() {
+    private func installLockScreen(item: VideoItem, useNativeDesktop: Bool) {
+        guard !isInstallingLockScreen else { return }
+        guard !needsPreparation || WallpaperStore.shared.isPreparedForLockScreen(item) else {
+            showMessage(title: "Conversion Required", text: "Convert this video for the macOS 27 lock screen first.")
+            return
+        }
         isInstallingLockScreen = true
-        lockStatusLabel.stringValue = "Lock Screen: Preparing video…"
+        conversionProgress.doubleValue = 0
+        conversionLabel.stringValue = "Preparing video…"
+        cancelConversionButton.title = "Cancel Conversion"
+        cancelConversionButton.isEnabled = true
         updateInspector()
 
-        Task { @MainActor in
+        let store = WallpaperStore.shared
+        let videoURL = store.url(for: item)
+        installTask = Task { @MainActor in
+            defer {
+                isInstallingLockScreen = false
+                installTask = nil
+                reload()
+            }
             do {
-                _ = try await MacOS26LockScreenInstaller.installSelectedVideo()
-                isInstallingLockScreen = false
-                reload()
-                showMessage(title: "Lock Screen Installed", text: "The selected video is now using the native macOS 26 Aerial lock-screen pipeline.")
+                _ = try await MacOS26LockScreenInstaller.install(
+                    videoURL: videoURL,
+                    preparedURL: needsPreparation ? store.preparedURL(for: item) : nil
+                ) { value in
+                    DispatchQueue.main.async {
+                        self.updateConversionProgress(value)
+                    }
+                }
+                try store.setSelectedVideo(id: item.id, for: .lockScreen)
+                if useNativeDesktop {
+                    try DesktopWallpaperAgentManager.shared.stop()
+                    var settings = store.loadSettings()
+                    settings.desktopVideoID = item.id
+                    settings.aerialDesktopEnabled = true
+                    try store.saveSettings(settings)
+                } else {
+                    var settings = store.loadSettings()
+                    settings.aerialDesktopEnabled = false
+                    try store.saveSettings(settings)
+                }
+                showMessage(title: "Wallpaper Installed", text: useNativeDesktop
+                    ? "The video now plays on the lock screen and slows to a stop on the desktop."
+                    : "The selected video is now installed on the lock screen.")
+            } catch is CancellationError {
+                conversionLabel.stringValue = "Conversion cancelled"
             } catch {
-                isInstallingLockScreen = false
-                reload()
                 showError(error)
             }
         }
+    }
+
+    private func updateConversionProgress(_ value: Double) {
+        guard isInstallingLockScreen, installTask?.isCancelled != true else { return }
+        conversionProgress.doubleValue = value * 100
+        if value >= 1 {
+            conversionLabel.stringValue = convertingVideoID != nil || selectedCatalogID != nil
+                ? "Finishing conversion…" : "Applying to Lock Screen…"
+            cancelConversionButton.isEnabled = false
+        } else {
+            conversionLabel.stringValue = "Encoding video… \(Int(value * 100))%"
+        }
+    }
+
+    @objc private func cancelConversion(_ sender: Any?) {
+        guard isInstallingLockScreen else { return }
+        conversionLabel.stringValue = catalogDownloadTask == nil
+            ? "Cancelling conversion…" : "Cancelling download…"
+        cancelConversionButton.isEnabled = false
+        installTask?.cancel()
+        catalogDownloadTask?.cancel()
     }
 
     @objc private func stopDesktop(_ sender: Any?) {
@@ -772,6 +1182,118 @@ final class WallpaperManagerWindowController: NSWindowController,
     }
 }
 
+private struct CatalogSnapshot: Codable {
+    let sourceURL: String
+    let entries: [CatalogVideo]
+}
+
+private struct CatalogVideo: Codable {
+    let title: String
+    let mwID: Int
+    let downloadURL: String
+    let durationSeconds: Double
+    let fileSize: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case title, mwID
+        case downloadURL = "download_url"
+        case durationSeconds = "duration_seconds"
+        case fileSize = "file_size"
+    }
+
+    var metadataText: String {
+        let duration = "\(Int(durationSeconds))s"
+        let size = ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
+        return "\(duration)  •  \(size)"
+    }
+
+    func fileURL(baseURL: URL) -> URL {
+        baseURL.appendingPathComponent("file").appendingPathComponent("\(mwID).mp4")
+    }
+
+    func posterURL(baseURL: URL) -> URL {
+        baseURL.appendingPathComponent("file").appendingPathComponent("\(mwID).jpeg")
+    }
+
+    func declaredDownloadURL(baseURL: URL) -> URL? {
+        URL(string: downloadURL, relativeTo: baseURL)?.absoluteURL
+    }
+}
+
+private enum CatalogError: LocalizedError {
+    case invalidCatalogResponse
+    case invalidVideoResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidCatalogResponse: return "The catalog server did not return a catalog successfully."
+        case .invalidVideoResponse: return "The catalog server did not return the video successfully."
+        }
+    }
+}
+
+private final class CatalogHeaderView: NSView {
+    static let identifier = NSUserInterfaceItemIdentifier("MotionWallpaper.CatalogHeader")
+
+    private let titleLabel = NSTextField(labelWithString: "Online Catalog")
+    private let subtitleLabel = NSTextField(labelWithString: "Paste a catalog URL to load or refresh the saved catalog.")
+    private let urlField = NSTextField()
+    private let loadButton = NSButton(title: "Update Catalog", target: nil, action: nil)
+    private let messageLabel = NSTextField(labelWithString: "")
+    private var onLoad: ((String) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        titleLabel.font = .systemFont(ofSize: 20, weight: .bold)
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.textColor = .secondaryLabelColor
+        urlField.placeholderString = "https://your-catalog.example/videos/"
+        urlField.font = .systemFont(ofSize: 12)
+        loadButton.bezelStyle = .rounded
+        loadButton.target = self
+        loadButton.action = #selector(load(_:))
+        messageLabel.font = .systemFont(ofSize: 11)
+        messageLabel.textColor = .secondaryLabelColor
+
+        for subview in [titleLabel, subtitleLabel, urlField, loadButton, messageLabel] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(subview)
+        }
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+            urlField.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            urlField.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 12),
+            urlField.heightAnchor.constraint(equalToConstant: 30),
+            loadButton.leadingAnchor.constraint(equalTo: urlField.trailingAnchor, constant: 8),
+            loadButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            loadButton.centerYAnchor.constraint(equalTo: urlField.centerYAnchor),
+            loadButton.widthAnchor.constraint(equalToConstant: 120),
+            messageLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            messageLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -20),
+            messageLabel.topAnchor.constraint(equalTo: urlField.bottomAnchor, constant: 7)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(url: String, message: String, loading: Bool, onLoad: @escaping (String) -> Void) {
+        urlField.stringValue = url
+        self.onLoad = onLoad
+        setMessage(message, loading: loading)
+    }
+
+    func setMessage(_ message: String, loading: Bool) {
+        messageLabel.stringValue = message
+        loadButton.isEnabled = !loading
+        loadButton.title = loading ? "Loading…" : "Update Catalog"
+    }
+
+    @objc private func load(_ sender: Any?) { onLoad?(urlField.stringValue) }
+}
+
 private final class VideoCardItem: NSCollectionViewItem {
     static let identifier = NSUserInterfaceItemIdentifier("MotionWallpaper.VideoCard")
 
@@ -832,15 +1354,21 @@ private final class VideoCardItem: NSCollectionViewItem {
         didSet { updateAppearance(hovered: cardView.isHovered) }
     }
 
-    func configure(video: VideoItem, url: URL, status: String) {
+    func configure(title: String, url: URL, status: String, downloaded: Bool, isPoster: Bool = false) {
         representedURL = url
-        titleLabel.stringValue = video.title
+        titleLabel.stringValue = title
         statusLabel.stringValue = status
-        thumbnailImageView.image = NSImage(systemSymbolName: "film", accessibilityDescription: video.title)
+        statusLabel.textColor = downloaded ? .systemGreen : .secondaryLabelColor
+        thumbnailImageView.image = NSImage(systemSymbolName: "film", accessibilityDescription: title)
 
-        VideoThumbnailProvider.shared.thumbnail(for: url) { [weak self] image in
+        let receiveImage: (NSImage?) -> Void = { [weak self] image in
             guard let self, self.representedURL == url else { return }
             if let image { self.thumbnailImageView.image = image }
+        }
+        if isPoster {
+            CatalogPosterProvider.shared.image(for: url, completion: receiveImage)
+        } else {
+            VideoThumbnailProvider.shared.thumbnail(for: url, completion: receiveImage)
         }
     }
 
@@ -921,5 +1449,37 @@ private final class VideoThumbnailProvider {
                 completion(image)
             }
         }
+    }
+}
+
+private final class CatalogPosterProvider {
+    static let shared = CatalogPosterProvider()
+
+    private let cache = NSCache<NSURL, NSImage>()
+    private var pending: [URL: [(NSImage?) -> Void]] = [:]
+
+    func image(for url: URL, completion: @escaping (NSImage?) -> Void) {
+        if let cached = cache.object(forKey: url as NSURL) {
+            completion(cached)
+            return
+        }
+        if pending[url] != nil {
+            pending[url]?.append(completion)
+            return
+        }
+        pending[url] = [completion]
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let validResponse = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+                let image = validResponse ? data.flatMap(NSImage.init(data:)) : nil
+                if let image { self.cache.setObject(image, forKey: url as NSURL) }
+                let callbacks = self.pending.removeValue(forKey: url) ?? []
+                callbacks.forEach { $0(image) }
+            }
+        }.resume()
     }
 }

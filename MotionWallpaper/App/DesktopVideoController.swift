@@ -76,6 +76,7 @@ final class DesktopWallpaperAgentManager {
     func startOrReload() throws {
         var settings = WallpaperStore.shared.loadSettings()
         settings.desktopEnabled = true
+        settings.aerialDesktopEnabled = false
         try WallpaperStore.shared.saveSettings(settings)
 
         if isRunning {
@@ -103,6 +104,7 @@ final class DesktopWallpaperAgentManager {
     func stop() throws {
         var settings = WallpaperStore.shared.loadSettings()
         settings.desktopEnabled = false
+        settings.aerialDesktopEnabled = false
         try WallpaperStore.shared.saveSettings(settings)
         post(Self.stopNotification)
     }

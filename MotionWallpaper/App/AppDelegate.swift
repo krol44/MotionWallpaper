@@ -283,15 +283,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func setLockScreenFromMenu(_ sender: Any?) {
-        Task { @MainActor in
-            do {
-                _ = try await MacOS26LockScreenInstaller.installSelectedVideo()
-                managerWindowController?.reload()
-                showInstalledAlert("The selected video is now installed on the macOS 26 lock screen.")
-            } catch {
-                showError(error)
-            }
-        }
+        showManager(sender)
+        managerWindowController?.reinstallConfiguredLockScreenVideo()
     }
 
     @objc private func restoreAppleLockScreen(_ sender: Any?) {

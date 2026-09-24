@@ -23,6 +23,7 @@ final class MacOS26LockScreenInstaller {
     enum InstallError: LocalizedError {
         case unsupportedSystem
         case noSelectedVideo
+        case videoNeedsConversion
         case noDownloadedAerial
         case wallpaperStoreMissing
         case noVideoTrack
@@ -35,6 +36,8 @@ final class MacOS26LockScreenInstaller {
                 return "Motion Wallpaper requires macOS 26 (Tahoe) or later."
             case .noSelectedVideo:
                 return "No lock-screen video is selected."
+            case .videoNeedsConversion:
+                return "Convert this video for macOS 27 before installing it on the lock screen."
             case .noDownloadedAerial:
                 return "No downloaded Apple Aerial was found. Open System Settings → Wallpaper, download any animated Aerial once, then try again."
             case .wallpaperStoreMissing:
@@ -126,16 +129,39 @@ final class MacOS26LockScreenInstaller {
     }
 
     @discardableResult
-    static func installSelectedVideo() async throws -> ResultInfo {
+    static func installSelectedVideo(progress: @escaping (Double) -> Void = { _ in }) async throws -> ResultInfo {
         try requireMacOS26()
-        guard let source = WallpaperStore.shared.selectedURL(for: .lockScreen) else {
+        let store = WallpaperStore.shared
+        guard let item = store.item(id: store.loadSettings().lockScreenVideoID) else {
             throw InstallError.noSelectedVideo
         }
-        return try await install(videoURL: source)
+        return try await install(videoURL: store.url(for: item),
+                                 preparedURL: store.preparedURL(for: item), progress: progress)
+    }
+
+    static func prepare(item: VideoItem, progress: @escaping (Double) -> Void = { _ in }) async throws {
+        let store = WallpaperStore.shared
+        if store.isPreparedForLockScreen(item) { progress(1); return }
+        let encoded = try await AerialTemporalEncoder.encode(
+            source: store.url(for: item),
+            progress: { progress($0 * 0.99) }
+        )
+        defer { try? fm.removeItem(at: encoded) }
+        try Task.checkCancellation()
+        try fm.createDirectory(at: store.preparedVideosDirectory, withIntermediateDirectories: true)
+        let destination = store.preparedURL(for: item)
+        let staging = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(item.id.uuidString)-\(UUID().uuidString).mov")
+        defer { try? fm.removeItem(at: staging) }
+        try fm.moveItem(at: encoded, to: staging)
+        try Task.checkCancellation()
+        try fm.moveItem(at: staging, to: destination)
+        progress(1)
     }
 
     @discardableResult
-    static func install(videoURL source: URL) async throws -> ResultInfo {
+    static func install(videoURL source: URL, preparedURL: URL? = nil,
+                        progress: @escaping (Double) -> Void = { _ in }) async throws -> ResultInfo {
         try requireMacOS26()
         try WallpaperStore.shared.ensureDirectories()
 
@@ -151,13 +177,23 @@ final class MacOS26LockScreenInstaller {
         // existed before Motion Wallpaper touched the Tahoe wallpaper store.
         try captureOriginalSystemWallpaperStateIfNeeded()
 
+        let isMacOS27 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
         let converted: URL
-        do {
-            converted = try await exportAerialMovie(source: source, preset: AVAssetExportPresetPassthrough)
-        } catch {
-            converted = try await exportAerialMovie(source: source, preset: AVAssetExportPresetHEVCHighestQuality)
+        if isMacOS27 {
+            guard let preparedURL, fm.fileExists(atPath: preparedURL.path) else {
+                throw InstallError.videoNeedsConversion
+            }
+            converted = preparedURL
+            progress(1)
+        } else {
+            do {
+                converted = try await exportAerialMovie(source: source, preset: AVAssetExportPresetPassthrough)
+            } catch {
+                converted = try await exportAerialMovie(source: source, preset: AVAssetExportPresetHEVCHighestQuality)
+            }
         }
-        defer { try? fm.removeItem(at: converted) }
+        defer { if !isMacOS27 { try? fm.removeItem(at: converted) } }
+        try Task.checkCancellation()
 
         try fm.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
         if firstInstall {
@@ -166,7 +202,9 @@ final class MacOS26LockScreenInstaller {
 
         let replacement = slot.deletingLastPathComponent().appendingPathComponent(".motionwallpaper-\(UUID().uuidString).mov")
         try? fm.removeItem(at: replacement)
+        defer { try? fm.removeItem(at: replacement) }
         try fm.copyItem(at: converted, to: replacement)
+        try Task.checkCancellation()
         _ = try fm.replaceItemAt(slot, withItemAt: replacement)
 
         let assetID = slot.deletingPathExtension().lastPathComponent
@@ -212,6 +250,9 @@ final class MacOS26LockScreenInstaller {
         try? fm.removeItem(at: stateURL)
         clearWallpaperCaches()
         reloadWallpaperRenderer()
+        var settings = WallpaperStore.shared.loadSettings()
+        settings.aerialDesktopEnabled = false
+        try WallpaperStore.shared.saveSettings(settings)
     }
 
     /// Alias used by the UI when restoring both the desktop's native background and
@@ -224,7 +265,10 @@ final class MacOS26LockScreenInstaller {
     /// renderer after unlock keeps subsequent lock-screen animations alive without
     /// blanking the currently visible lock screen.
     static func resetRendererAfterUnlock() {
-        guard isInstalled else { return }
+        // The macOS 26 workaround interrupts the XPC connection on macOS 27.
+        // Temporal HEVC lets the newer renderer finish its own unlock ramp.
+        guard isInstalled,
+              ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 26 else { return }
         kill("WallpaperAerialsExtension")
     }
 
@@ -590,7 +634,8 @@ final class MacOS26LockScreenInstaller {
         let report: [String: Any] = [
             "installedAt": ISO8601DateFormatter().string(from: Date()),
             "runtimeVersion": "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
-            "method": "macos26-aerial-slot",
+            "method": ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+                ? "macos27-temporal-hevc-aerial-slot" : "macos26-aerial-slot",
             "sourceVideo": source.path,
             "aerialAssetID": assetID,
             "slot": slot.path,

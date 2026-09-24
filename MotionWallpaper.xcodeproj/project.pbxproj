@@ -19,6 +19,7 @@
 		B0010000000000000000000B /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B0020000000000000000000B /* AppKit.framework */; };
 		B0010000000000000000000C /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B0020000000000000000000C /* CoreGraphics.framework */; };
 		B0010000000000000000000D /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B0020000000000000000000D /* ServiceManagement.framework */; };
+		B0010000000000000000000E /* AerialTemporalEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00200000000000000000010 /* AerialTemporalEncoder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 		B0020000000000000000000D /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
 		B0020000000000000000000E /* App Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "App Info.plist"; path = Info.plist; sourceTree = "<group>"; };
 		B0020000000000000000000F /* MotionWallpaper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MotionWallpaper.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00200000000000000000010 /* AerialTemporalEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AerialTemporalEncoder.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,7 +51,7 @@
 
 /* Begin PBXGroup section */
 		B00400000000000000000001 = {isa = PBXGroup; children = (B00400000000000000000002 /* App */, B00400000000000000000003 /* Shared */, B00400000000000000000004 /* Resources */, B00400000000000000000005 /* Frameworks */, B00400000000000000000006 /* Products */, ); sourceTree = "<group>"; };
-		B00400000000000000000002 /* App */ = {isa = PBXGroup; children = (B00200000000000000000002, B00200000000000000000001, B00200000000000000000003, B00200000000000000000006, B00200000000000000000004, B00200000000000000000005, B0020000000000000000000E, ); path = MotionWallpaper/App; sourceTree = SOURCE_ROOT; };
+		B00400000000000000000002 /* App */ = {isa = PBXGroup; children = (B00200000000000000000002, B00200000000000000000001, B00200000000000000000003, B00200000000000000000006, B00200000000000000000010, B00200000000000000000004, B00200000000000000000005, B0020000000000000000000E, ); path = MotionWallpaper/App; sourceTree = SOURCE_ROOT; };
 		B00400000000000000000003 /* Shared */ = {isa = PBXGroup; children = (B00200000000000000000007, B00200000000000000000008, ); path = MotionWallpaper/Shared; sourceTree = SOURCE_ROOT; };
 		B00400000000000000000004 /* Resources */ = {isa = PBXGroup; children = (B00200000000000000000009, ); path = MotionWallpaper/Resources; sourceTree = SOURCE_ROOT; };
 		B00400000000000000000005 /* Frameworks */ = {isa = PBXGroup; children = (B0020000000000000000000A, B0020000000000000000000B, B0020000000000000000000C, B0020000000000000000000D, ); name = Frameworks; sourceTree = "<group>"; };
@@ -65,7 +67,7 @@
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
-		B00600000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100000000000000000002, B00100000000000000000001, B00100000000000000000003, B00100000000000000000006, B00100000000000000000004, B00100000000000000000005, B00100000000000000000007, B00100000000000000000008, ); runOnlyForDeploymentPostprocessing = 0; };
+		B00600000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100000000000000000002, B00100000000000000000001, B00100000000000000000003, B00100000000000000000006, B0010000000000000000000E, B00100000000000000000004, B00100000000000000000005, B00100000000000000000007, B00100000000000000000008, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */

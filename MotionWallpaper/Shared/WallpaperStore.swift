@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 
@@ -20,12 +21,16 @@ public struct VideoItem: Codable, Identifiable, Equatable {
     public var title: String
     public var fileName: String
     public var dateAdded: Date
+    public var catalogSourceKey: String?
+    public var catalogMWID: Int?
 
-    public init(id: UUID = UUID(), title: String, fileName: String, dateAdded: Date = Date()) {
+    public init(id: UUID = UUID(), title: String, fileName: String, dateAdded: Date = Date(), catalogSourceKey: String? = nil, catalogMWID: Int? = nil) {
         self.id = id
         self.title = title
         self.fileName = fileName
         self.dateAdded = dateAdded
+        self.catalogSourceKey = catalogSourceKey
+        self.catalogMWID = catalogMWID
     }
 }
 
@@ -33,6 +38,7 @@ public struct WallpaperSettings: Codable {
     public var desktopVideoID: UUID?
     public var lockScreenVideoID: UUID?
     public var desktopEnabled: Bool
+    public var aerialDesktopEnabled: Bool
     public var startDesktopOnLaunch: Bool
     public var launchAtLogin: Bool
     public var muted: Bool
@@ -42,6 +48,7 @@ public struct WallpaperSettings: Codable {
         desktopVideoID: nil,
         lockScreenVideoID: nil,
         desktopEnabled: true,
+        aerialDesktopEnabled: false,
         startDesktopOnLaunch: true,
         launchAtLogin: false,
         muted: true,
@@ -52,16 +59,18 @@ public struct WallpaperSettings: Codable {
         case desktopVideoID
         case lockScreenVideoID
         case desktopEnabled
+        case aerialDesktopEnabled
         case startDesktopOnLaunch
         case launchAtLogin
         case muted
         case fillScreen
     }
 
-    public init(desktopVideoID: UUID?, lockScreenVideoID: UUID?, desktopEnabled: Bool, startDesktopOnLaunch: Bool, launchAtLogin: Bool, muted: Bool, fillScreen: Bool) {
+    public init(desktopVideoID: UUID?, lockScreenVideoID: UUID?, desktopEnabled: Bool, aerialDesktopEnabled: Bool = false, startDesktopOnLaunch: Bool, launchAtLogin: Bool, muted: Bool, fillScreen: Bool) {
         self.desktopVideoID = desktopVideoID
         self.lockScreenVideoID = lockScreenVideoID
         self.desktopEnabled = desktopEnabled
+        self.aerialDesktopEnabled = aerialDesktopEnabled
         self.startDesktopOnLaunch = startDesktopOnLaunch
         self.launchAtLogin = launchAtLogin
         self.muted = muted
@@ -73,6 +82,7 @@ public struct WallpaperSettings: Codable {
         desktopVideoID = try container.decodeIfPresent(UUID.self, forKey: .desktopVideoID)
         lockScreenVideoID = try container.decodeIfPresent(UUID.self, forKey: .lockScreenVideoID)
         desktopEnabled = try container.decodeIfPresent(Bool.self, forKey: .desktopEnabled) ?? true
+        aerialDesktopEnabled = try container.decodeIfPresent(Bool.self, forKey: .aerialDesktopEnabled) ?? false
         startDesktopOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .startDesktopOnLaunch) ?? true
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? true
@@ -97,6 +107,24 @@ public final class WallpaperStore {
 
     public var videosDirectory: URL {
         appSupportDirectory.appendingPathComponent("Videos", isDirectory: true)
+    }
+
+    public var preparedVideosDirectory: URL {
+        appSupportDirectory.appendingPathComponent("Prepared/macOS27-v1", isDirectory: true)
+    }
+
+    public func preparedURL(for item: VideoItem) -> URL {
+        if item.catalogSourceKey != nil, item.catalogMWID != nil { return url(for: item) }
+        return preparedVideosDirectory.appendingPathComponent("\(item.id.uuidString).mov")
+    }
+
+    public static func catalogSourceKey(for baseURL: URL) -> String {
+        SHA256.hash(data: Data(baseURL.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    public func isPreparedForLockScreen(_ item: VideoItem) -> Bool {
+        FileManager.default.fileExists(atPath: preparedURL(for: item).path)
     }
 
     public var picturesDirectory: URL {
@@ -182,16 +210,39 @@ public final class WallpaperStore {
         return item
     }
 
+    public func addConvertedCatalogVideo(from convertedURL: URL, title: String, baseURL: URL, mwID: Int) throws -> VideoItem {
+        try ensureDirectories()
+        let id = UUID()
+        let fileName = "\(id.uuidString).mov"
+        let destination = videosDirectory.appendingPathComponent(fileName)
+        try FileManager.default.moveItem(at: convertedURL, to: destination)
+        do {
+            let item = VideoItem(id: id, title: title, fileName: fileName,
+                                 catalogSourceKey: Self.catalogSourceKey(for: baseURL), catalogMWID: mwID)
+            var videos = loadVideos()
+            videos.append(item)
+            try saveVideos(videos)
+            return item
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+    }
+
     public func removeVideo(id: UUID) throws {
         var videos = loadVideos()
         if let item = videos.first(where: { $0.id == id }) {
             try? FileManager.default.removeItem(at: url(for: item))
+            try? FileManager.default.removeItem(at: preparedURL(for: item))
         }
         videos.removeAll { $0.id == id }
         try saveVideos(videos)
 
         var settings = loadSettings()
-        if settings.desktopVideoID == id { settings.desktopVideoID = videos.first?.id }
+        if settings.desktopVideoID == id {
+            settings.desktopVideoID = videos.first?.id
+            settings.aerialDesktopEnabled = false
+        }
         if settings.lockScreenVideoID == id { settings.lockScreenVideoID = videos.first?.id }
         try saveSettings(settings)
     }
